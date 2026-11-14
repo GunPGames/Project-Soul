@@ -107,3 +107,8 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# Project-Soul: MCP 스크린샷(유료 에셋 렌더 포함)은 올리지 않는다.
+/[Aa]ssets/Screenshots/
+/[Aa]ssets/Screenshots.meta
+
