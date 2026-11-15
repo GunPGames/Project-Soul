@@ -524,9 +524,9 @@ namespace Soulslike.EditorTools
 
             // 칼: 오른손(Weapon_r). 넣어 두면 칼집 안에 있는 것으로 보고 숨긴다. 칼집은 허리(Scabbard_Target01)에 항상 찬다.
             WriteWeapon(KatanaAssetPath, "Katana", WeaponKind.Melee, katanaModel, KatanaBone, "",
-                scabbardModel, "Scabbard_Target01", null, propEuler: new Vector3(0f, 90f, 0f));
+                scabbardModel, "Scabbard_Target01", null, propEuler: Vector3.zero);
             // 활: 왼손(Weapon_l). 넣어 두면 등(Bow_BackTarget)에 멘다.
-            // 회전 보정은 플레이 테스트로 맞춘 값이다(칼집 yaw 90°, 손에 든 활 yaw 90°).
+            // 회전 보정은 플레이 테스트로 맞춘 값이다(손에 든 활 yaw 90°. 칼집은 보정 없음).
             WriteWeapon(BowAssetPath, "Bow", WeaponKind.Ranged, bowModel, "Weapon_l", "Bow_BackTarget",
                 null, null, overrides, handEuler: new Vector3(0f, 90f, 0f));
 

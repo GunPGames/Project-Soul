@@ -23,7 +23,7 @@ MonoBehaviour:
   props:
   - prefab: {fileID: 100000, guid: ba6cf27e84bbb6b4289b8055a61e55e3, type: 3}
     bone: Scabbard_Target01
-    localEulerAngles: {x: 0, y: 90, z: 0}
+    localEulerAngles: {x: 0, y: 0, z: 0}
   animationOverrides: {fileID: 0}
   equipState: Equip
   equipAttachTime: 0.35
