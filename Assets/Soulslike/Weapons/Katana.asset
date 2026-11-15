@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d7ddc955f9df3ca48ae994eeab8e856b, type: 3}
+  m_Name: Katana
+  m_EditorClassIdentifier: Soulslike.Runtime::Soulslike.WeaponDefinition
+  displayName: Katana
+  kind: 0
+  modelPrefab: {fileID: 100000, guid: 1d407a6008b748b4f9fec2ed72ffde73, type: 3}
+  handBone: Weapon_r
+  holsterBone: 
+  localPosition: {x: 0, y: 0, z: 0}
+  localEulerAngles: {x: 0, y: 0, z: 0}
+  holsterLocalEulerAngles: {x: 0, y: 0, z: 0}
+  props:
+  - prefab: {fileID: 100000, guid: ba6cf27e84bbb6b4289b8055a61e55e3, type: 3}
+    bone: Scabbard_Target01
+    localEulerAngles: {x: 0, y: 90, z: 0}
+  animationOverrides: {fileID: 0}
+  equipState: Equip
+  equipAttachTime: 0.35
