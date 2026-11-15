@@ -18,19 +18,22 @@ namespace Soulslike
     public class PlayerLocomotion : MonoBehaviour
     {
         enum Gait { Idle, Walk, Run, Sprint }
-        enum MotorState { Grounded, Rolling, Airborne }
+        enum MotorState { Grounded, Rolling, Airborne, Action }
 
         // 애니메이터 상태 이름. SoulslikeSetupMenu가 같은 이름으로 만든다.
         public const string LocomotionState = "Locomotion";
         public const string JumpStartState = "JumpStart";
         public const string JumpLoopState = "JumpLoop";
         public const string RollTag = "Roll";
+        /// <summary>공격처럼 이동을 잠그는 애니메이터 상태에 붙이는 태그.</summary>
+        public const string ActionTag = "Action";
         public static readonly string[] RollStates = { "Roll_F", "Roll_R", "Roll_B", "Roll_L" };
 
         static readonly Vector3[] RollLocalDirections = { Vector3.forward, Vector3.right, Vector3.back, Vector3.left };
 
         [Header("References (비워 두면 자동으로 찾는다)")]
         [SerializeField] PlayerInputReader input;
+        [SerializeField] PlayerStats stats;
         [SerializeField] LockOnController lockOn;
         [SerializeField] Animator animator;
         [SerializeField] Transform cameraTransform;
@@ -62,6 +65,16 @@ namespace Soulslike
         [Tooltip("루트 모션을 끈 경우의 구르기 속도와 시간.")]
         [SerializeField] float fallbackRollSpeed = 5f;
         [SerializeField] float fallbackRollDuration = 0.7f;
+
+        [Header("Stamina (이슈 #3)")]
+        [Tooltip("구르기 1회의 기력 소모량. 기력이 0이면 구르지 못한다.")]
+        [SerializeField] float rollStaminaCost = 18f;
+
+        [Header("Action (공격 등)")]
+        [Tooltip("애니메이터 상태를 확인할 수 없을 때 행동을 강제로 끝내는 시간(초).")]
+        [SerializeField] float maxActionDuration = 4f;
+        [Tooltip("록온 중 행동하는 동안 대상 쪽으로 도는 속도 배율.")]
+        [SerializeField, Range(0f, 1f)] float actionLockOnTurnScale = 0.5f;
 
         [Header("Jump / Air")]
         [SerializeField] float jumpHeight = 1.2f;
@@ -96,10 +109,18 @@ namespace Soulslike
 
         Vector3 _rollDirection;
         Quaternion _rollMotionRotation = Quaternion.identity;
+        bool _actionCancelableByRoll;
+        bool _actionCancelableByMove;
 
         public bool IsStrafing { get; private set; }
         public bool IsRolling => _state == MotorState.Rolling;
         public bool IsAirborne => _state == MotorState.Airborne;
+        public bool IsInAction => _state == MotorState.Action;
+        /// <summary>활 조준 중 이동(카메라 방향 고정 + 걷기 스트레이프)인지.</summary>
+        public bool IsAiming { get; private set; }
+        public bool IsGroundedState => _state == MotorState.Grounded;
+        /// <summary>지상에서 다른 행동이 없어 새 행동을 시작할 수 있는지.</summary>
+        public bool CanStartAction => _state == MotorState.Grounded && _ungroundedTime <= coyoteTime && animator != null;
         public Vector3 PlanarVelocity => _planarVelocity;
 
         bool RootMotionActive => useRootMotion && animator != null && animator.isActiveAndEnabled;
@@ -108,6 +129,7 @@ namespace Soulslike
         {
             _controller = GetComponent<CharacterController>();
             if (input == null) input = GetComponent<PlayerInputReader>();
+            if (stats == null) stats = GetComponent<PlayerStats>();
             if (lockOn == null) lockOn = GetComponent<LockOnController>();
             if (animator == null) animator = GetComponentInChildren<Animator>();
             if (cameraTransform == null && Camera.main != null) cameraTransform = Camera.main.transform;
@@ -139,6 +161,7 @@ namespace Soulslike
                 case MotorState.Grounded: UpdateGrounded(dt); break;
                 case MotorState.Rolling: UpdateRolling(); break;
                 case MotorState.Airborne: UpdateAirborne(dt); break;
+                case MotorState.Action: UpdateAction(dt); break;
             }
 
             UpdateVerticalVelocity(dt);
@@ -162,24 +185,100 @@ namespace Soulslike
                 StartJump();
                 return;
             }
-            if (_rollBuffer > 0f)
+            if (_rollBuffer > 0f && TryStartRoll()) return;
+
+            Vector3 face;
+            if (IsAiming)
             {
-                StartRoll();
+                // 활 조준 중: 카메라가 보는 방향을 바라보고, 입력 방향으로는 옆걸음·뒷걸음한다.
+                IsStrafing = true;
+                face = cameraTransform != null ? Flatten(cameraTransform.forward) : Vector3.zero;
+            }
+            else
+            {
+                // 록온 중(질주 제외)이면 대상을, 아니면 이동 방향을 바라본다.
+                IsStrafing = lockOn != null && lockOn.IsLockedOn && _gait != Gait.Sprint;
+                face = IsStrafing
+                    ? Flatten(lockOn.Current.AimPoint - transform.position)
+                    : (_gait == Gait.Idle ? Vector3.zero : _desiredDirection);
+            }
+            RotateTowards(face, rotationSpeed, dt);
+        }
+
+        /// <summary>
+        /// 이동을 잠그는 행동(공격 등)을 시작한다. 상태에는 "Action" 태그가 있어야 하며,
+        /// 그 상태가 끝나 다른 상태로 넘어가면 자동으로 지상 이동으로 돌아온다.
+        /// 행동 중 이동량은 그 애니메이션의 루트 모션(공격 전진 스텝 등)이다.
+        /// </summary>
+        /// <param name="chainFromAction">참이면 다른 행동 중에도 시작한다(콤보 다음 타).</param>
+        public bool TryStartAction(string stateName, float crossFade = 0.1f, bool chainFromAction = false)
+        {
+            bool allowed = CanStartAction || (chainFromAction && _state == MotorState.Action);
+            if (!allowed) return false;
+            if (!animator.HasState(0, Animator.StringToHash(stateName)))
+            {
+                Debug.LogWarning($"[PlayerLocomotion] 애니메이터에 '{stateName}' 상태가 없다. Tools > Soulslike > 1을 다시 실행한다.", this);
+                return false;
+            }
+
+            // 소울라이크 관례: 휘두르기 직전에 입력 방향(록온 중이면 대상)으로 몸을 돌린다.
+            Vector3 face = lockOn != null && lockOn.IsLockedOn
+                ? Flatten(lockOn.Current.AimPoint - transform.position)
+                : _desiredDirection;
+            if (face.sqrMagnitude > 0.01f) transform.rotation = Quaternion.LookRotation(face);
+
+            _state = MotorState.Action;
+            _stateTime = 0f;
+            // 기본은 구르기로 끊을 수 없다. 타격 판정이 지나면 공격 쪽이 SetActionCancelable로 연다.
+            _actionCancelableByRoll = false;
+            _actionCancelableByMove = false;
+            _rollBuffer = 0f;
+            _jumpBuffer = 0f;
+            animator.CrossFadeInFixedTime(stateName, crossFade, 0);
+            return true;
+        }
+
+        /// <summary>현재 행동을 구르기로 끊을 수 있는지 설정한다.</summary>
+        public void SetActionCancelable(bool cancelable)
+        {
+            if (_state == MotorState.Action) _actionCancelableByRoll = cancelable;
+        }
+
+        /// <summary>현재 행동을 이동 입력으로 끊을 수 있는지 설정한다(후딜레이 캔슬).</summary>
+        public void SetActionMoveCancelable(bool cancelable)
+        {
+            if (_state == MotorState.Action) _actionCancelableByMove = cancelable;
+        }
+
+        void UpdateAction(float dt)
+        {
+            if (_ungroundedTime > coyoteTime)
+            {
+                EnterAirborne(jumped: false);
+                return;
+            }
+            if (_actionCancelableByRoll && _rollBuffer > 0f && TryStartRoll()) return;
+            if (_actionCancelableByMove && _gait != Gait.Idle)
+            {
+                // 후딜레이 중 이동 입력이 들어오면 남은 동작을 버리고 바로 이동으로 넘어간다.
+                animator.CrossFadeInFixedTime(LocomotionState, 0.2f, 0);
+                _state = MotorState.Grounded;
+                _stateTime = 0f;
                 return;
             }
 
-            // 록온 중(질주 제외)이면 대상을, 아니면 이동 방향을 바라본다.
-            IsStrafing = lockOn != null && lockOn.IsLockedOn && _gait != Gait.Sprint;
-            Vector3 face = IsStrafing
-                ? Flatten(lockOn.Current.AimPoint - transform.position)
-                : (_gait == Gait.Idle ? Vector3.zero : _desiredDirection);
-            RotateTowards(face, rotationSpeed, dt);
+            IsStrafing = lockOn != null && lockOn.IsLockedOn;
+            if (IsStrafing)
+                RotateTowards(Flatten(lockOn.Current.AimPoint - transform.position), rotationSpeed * actionLockOnTurnScale, dt);
+
+            bool finished = _stateTime > 0.1f && !IsAnimatorInTag(ActionTag);
+            if (finished || _stateTime > maxActionDuration) _state = MotorState.Grounded;
         }
 
         void UpdateRolling()
         {
             bool finished = RootMotionActive
-                ? _stateTime > 0.1f && !IsAnimatorInRoll()
+                ? _stateTime > 0.1f && !IsAnimatorInTag(RollTag)
                 : _stateTime >= fallbackRollDuration;
 
             if (finished || _stateTime > maxRollDuration) _state = MotorState.Grounded;
@@ -198,6 +297,17 @@ namespace Soulslike
 
             if (_stateTime > 0.05f && _controller.isGrounded && _verticalVelocity <= 0f) Land();
         }
+
+        /// <summary>기력이 있으면 구르고 기력을 쓴다. 기력이 0이면 구르지 않는다(입력 버퍼는 남겨 회복되면 구른다).</summary>
+        bool TryStartRoll()
+        {
+            if (stats != null && !stats.TryConsumeStamina(rollStaminaCost)) return false;
+            StartRoll();
+            return true;
+        }
+
+        /// <summary>활 조준 중 이동 방식으로 바꾼다. BowAttack이 조준을 시작·끝낼 때 호출한다.</summary>
+        public void SetAimOverride(bool aiming) => IsAiming = aiming;
 
         void StartRoll()
         {
@@ -311,6 +421,8 @@ namespace Soulslike
                     return _rollDirection * fallbackRollSpeed;
                 case MotorState.Airborne:
                     return _airVelocity;
+                case MotorState.Action:
+                    return Vector3.MoveTowards(_planarVelocity, Vector3.zero, acceleration * dt);
                 default:
                     Vector3 target = _gait == Gait.Idle ? Vector3.zero : _desiredDirection * GetSpeed(_gait);
                     return Vector3.MoveTowards(_planarVelocity, target, acceleration * dt);
@@ -358,12 +470,12 @@ namespace Soulslike
             animator.SetFloat(MoveYHash, blend.y, animatorDampTime, dt);
         }
 
-        bool IsAnimatorInRoll()
+        bool IsAnimatorInTag(string tag)
         {
-            // 구르기 → 이동 전환이 시작되면 구르기가 끝난 것으로 보고 조작을 돌려준다.
+            // 구르기·행동 → 이동 전환이 시작되면 끝난 것으로 보고 조작을 돌려준다.
             return animator.IsInTransition(0)
-                ? animator.GetNextAnimatorStateInfo(0).IsTag(RollTag)
-                : animator.GetCurrentAnimatorStateInfo(0).IsTag(RollTag);
+                ? animator.GetNextAnimatorStateInfo(0).IsTag(tag)
+                : animator.GetCurrentAnimatorStateInfo(0).IsTag(tag);
         }
 
         // ───────────────────────── 보조 함수 ─────────────────────────
@@ -383,6 +495,8 @@ namespace Soulslike
         Gait SelectGait(float inputMagnitude)
         {
             if (inputMagnitude < 0.1f || input == null) return Gait.Idle;
+            // 조준 중에는 걷기로만 움직인다(질주·달리기 불가).
+            if (IsAiming) return Gait.Walk;
             if (input.SprintHeld) return Gait.Sprint;
             if (input.WalkHeld || inputMagnitude < walkInputThreshold) return Gait.Walk;
             return Gait.Run;
